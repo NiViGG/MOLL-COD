@@ -1,0 +1,104 @@
+# Harley-AI — Full stack: App + Ollama LLM + Redis
+
+services:
+
+  # ── Ollama LLM ──────────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: harley-ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - harley-net
+    restart: unless-stopped
+    # Uncomment for GPU (NVIDIA):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── Pull default model ───────────────────────────────────────────────────────
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: harley-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - harley-net
+    restart: "no"
+    entrypoint: >
+      sh -c "
+        echo 'Pulling llama3.2...' &&
+        curl -s -X POST http://ollama:11434/api/pull -d '{\"name\":\"llama3.2\"}' &&
+        echo 'Pulling llava for vision...' &&
+        curl -s -X POST http://ollama:11434/api/pull -d '{\"name\":\"llava\"}' &&
+        echo 'Models ready!'
+      "
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: harley-redis
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    networks:
+      - harley-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Harley App ───────────────────────────────────────────────────────────────
+  app:
+    build: .
+    container_name: harley-app
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2
+      - OLLAMA_VISION_MODEL=llava
+      - WHISPER_MODEL=base
+      - CORS_ORIGINS=*
+      - LOG_LEVEL=INFO
+      - MAX_UPLOAD_MB=50
+    volumes:
+      - ./knowledge:/app/knowledge
+      - ./logs:/app/logs
+      - ./versions:/app/versions
+      - ./updates:/app/updates
+      - ./static:/app/static
+      - whisper_cache:/root/.cache/whisper
+    depends_on:
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    networks:
+      - harley-net
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  redis_data:
+  whisper_cache:
+
+networks:
+  harley-net:
+    driver: bridge
